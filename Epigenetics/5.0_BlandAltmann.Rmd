@@ -1,0 +1,174 @@
+---
+title: "IDEAL Methylation Analysis Final"
+author: "David Martino \nTelethon Kids Institute  \nUniversity of Western Australia\n"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=8, fig.height=8)
+```
+
+**Project**
+*Study: IDEAL project*  
+*PI: Ofer Levy*  
+*contact: Ofer Levy <Ofer.Levy@childrens.harvard.edu>*   
+
+**Protocol**
+*Cell type: PBMC*  
+*Extraction method: Chemagic low volume blood kit*  
+*Assay: Infinium Human Methylation EPIC array*  
+
+**Data Generation**  
+*0.65 - 1.5ug of DNA send to AGRF for bisulphite treatment and hybridization to array*  
+*Contact: Melinda Ziino <melinda.ziino@agrf.org.au>*  
+
+# Setup
+## Directories
+```{r}
+datadir <- '/home/nschultz/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL'
+reportdir <- '~/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+plotdir <- '~/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL/plots'
+```
+
+## Libraries 
+```{r call library packages, message= FALSE}
+library(minfi)
+library(ggplot2)
+library(ggsci)
+library(tidyverse)
+library(ggpubr)
+library(limma)
+library(dplyr)
+library(DMRcate)
+library(regioneR)
+library(gridExtra)
+library(grid)
+library(ggrepel)
+```
+
+
+```{r}
+# using the PBS dmps
+
+olprobes <- read.csv(file.path(reportdir,'IPstatusPBS.dmps.csv'))
+
+Probes = olprobes$ProbeID
+
+#subset to those probes
+beta.sub <- Beta[Probes,]
+
+#subset to PBS and MPL only
+beta.sub <- beta.sub[,metadata$Condition=='PBS' | metadata$Condition=='MPL']
+
+#also metadata
+meta.sub <- metadata[metadata$Condition=='PBS' | metadata$Condition=='MPL',]
+
+beta.sub.mpl <- beta.sub[, meta.sub$Condition=='MPL']
+beta.sub.pbs <- beta.sub[, meta.sub$Condition=='PBS']
+
+#calculate the delta of post - pre stimulation
+#beta.delta <- beta.sub.mpl - beta.sub.pbs 
+metadelta <- meta.sub[meta.sub$Condition=='MPL',] #subset to just one condition for linear modelling
+```
+
+
+```{r}
+design <- model.matrix(~Ipstatus + sex + Age.months, metadelta) 
+
+fit <- lmFit(beta.sub.mpl, design)
+fit2 <- eBayes(fit)
+
+result.mpl <- topTable(fit2, coef = 2, number = Inf, sort.by = 'none') 
+```
+
+
+```{r}
+summary(result.mpl$adj.P.Val <= 0.05)
+
+```
+
+
+```{r}
+fit <- lmFit(beta.sub.pbs, design) # Now we fit again to the pre-stimulation data set (PBS condition)
+fit2 <- eBayes(fit)
+result.pbs <- topTable(fit2, coef = 2, number = Inf, sort.by = 'none') # representes the statistical difference between groups pre stimulation
+```
+
+
+```{r}
+summary(result.pbs$adj.P.Val <= 0.05)
+ 
+```
+
+
+```{r}
+# subest to the 217 significant ones that were different at baseline in both results tables
+result.pbs <- result.pbs[result.mpl$adj.P.Val >= 0.05,]
+result.mpl <- result.mpl[rownames(result.pbs),]
+
+# Calculate the sign of each element in each vector
+pbs_sign <- sign(result.pbs$logFC)
+mpl_sign <- sign(result.mpl$logFC)
+
+# Compare the signs of the corresponding elements in the two vectors
+signs_equal <- pbs_sign == mpl_sign
+
+# Print the results
+print(signs_equal)
+
+#just get the ones where the signs match
+result.mpl.sign <- result.mpl[signs_equal,]
+result.pbs.sign <- result.pbs[signs_equal,]
+```
+
+#Bland Altman visualisation
+```{r}
+df = cbind(result.pbs$logFC, result.mpl$logF)
+colnames(df)= c('effect.unstim', 'effect.MPL.stim')
+rownames(df) = rownames(result.pbs)
+df = as.data.frame(df)
+```
+
+```{r}
+#create new column for average measurement
+df$avg <- rowMeans(beta.sub[rownames(df),]) 
+
+#create new column for difference in measurements
+df$diff <- df$effect.MPL.stim - df$effect.unstim
+
+#find average difference
+mean_diff <- mean(df$diff)
+
+#find lower 95% confidence interval limits
+lower <- mean_diff - 1.96*sd(df$diff)
+
+#find upper 95% confidence interval limits
+upper <- mean_diff + 1.96*sd(df$diff)
+```
+
+```{r}
+png(file=file.path(plotdir,'bland_atlman.png'), width = 650, height = 450)
+
+#create Bland-Altman plot
+ggplot(df, aes(x = avg, y = diff)) +
+  geom_point(size=3, shape = 21,colour = "black",fill = '#8080ff') +
+  geom_hline(yintercept = mean_diff) +
+  geom_hline(yintercept = lower, color = "red", linetype="dashed") +
+  geom_hline(yintercept = upper, color = "red", linetype="dashed") +
+  ggtitle("Bland-Altman Plot") +
+  ylab("Difference Between Effects") +
+  xlab("Average Methylation")+
+  theme_bw(base_rect_size = 2, base_size = 20) + 
+   theme(plot.title = element_text(hjust = 0.5), axis.text = element_text(face = "bold"))
+```
+#Session Info
+```{r}
+sessionInfo()
+```

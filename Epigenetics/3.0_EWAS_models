@@ -1,0 +1,433 @@
+---
+title: "IDEAL Methylation Analysis Final"
+author: "David Martino and Nikki Schultz \nTelethon Kids Institute  \nUniversity of Western Australia\n"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=8, fig.height=8)
+```
+
+**Project**
+*Study: IDEAL project*  
+*PI: Ofer Levy*  
+*contact: Ofer Levy <Ofer.Levy@childrens.harvard.edu>*   
+
+**Protocol**
+*Cell type: PBMC*  
+*Extraction method: Chemagic low volume blood kit*  
+*Assay: Infinium Human Methylation EPIC array*  
+
+**Data Generation**  
+*0.65 - 1.5ug of DNA send to AGRF for bisulphite treatment and hybridization to array*  
+*Contact: Melinda Ziino <melinda.ziino@agrf.org.au>*  
+
+# Setup
+## Directories
+```{r}
+datadir <- '/home/nschultz/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL'
+reportdir <- '~/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+plotdir <- '~/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL/plots'
+```
+
+## Libraries 
+```{r call library packages, message= FALSE}
+library(minfi)
+library(ggplot2)
+library(ggsci)
+library(tidyverse)
+library(ggpubr)
+library(limma)
+library(dplyr)
+library(DMRcate)
+library(regioneR)
+library(gridExtra)
+library(grid)
+library(ggrepel)
+```
+
+# Load processed data
+```{r}
+load(file.path(datadir,'data_sets_final.RData'))
+```
+
+# Analysis IAP vs NIAP: PBS
+
+## Hypothesis testing
+
+## EWAS on Full Genome
+```{r, warning=FALSE}
+#Model definition
+design <- model.matrix(~0 + tx + sex +
+                         CD4T+ 
+                         CD8T+
+                         NK+
+                         Bcell+
+                         Mono+
+                         Gran+
+                         PC1_cp+
+                        PC2_cp+
+                        PC3_cp+
+                        PC4_cp+
+                        PC5_cp+
+                        PC1_snp+
+                        PC2_snp+
+                         Age.months,metadata)
+
+colnames(design)[1:8] <- levels(metadata$tx)
+colnames(design) <- make.names(colnames(design))
+
+#create variable for autosomes
+autosomes = !(map2genome$chr=='chrX' | map2genome$chr=='chrY')
+
+#model correlation between subjects as a random effect
+#corfit <- duplicateCorrelation(M[autosomes,], design, block=dframe$Subject_ID)
+
+load(file.path(datadir,'corfit.RData'))
+
+#fit M vals
+M.fit <- lmFit(M[autosomes,], design, block = metadata$Subject_ID, correlation =  corfit$consensus.correlation)
+#fit B vals
+B.fit <- lmFit(Beta[autosomes,], design, block = metadata$Subject_ID, correlation =  corfit$consensus.correlation)
+
+#make contrasts
+cm <- makeContrasts(
+  PBS = IP.PBS - NIP.PBS,
+    levels=design)
+
+#fit contrasts
+M.fit2 <- contrasts.fit(M.fit, cm)
+M.fit2 <- eBayes(M.fit2)
+
+#fit contrasts
+B.fit2 <- contrasts.fit(B.fit, cm)
+B.fit2 <- eBayes(B.fit2)
+
+summary(decideTests(M.fit2))
+
+```
+
+
+## Full Genome DMP Finder PBS Condition
+```{r DMP Finder IAP vs NIAP: PBS - full genome}
+Mtt_PBS <- topTable(M.fit2, coef = 'PBS', number = Inf, sort.by = 'none')
+Btt_PBS <- topTable(B.fit2, coef = 'PBS', number = Inf, sort.by = 'none')
+
+#EWAS statistics
+
+#Annotations
+annotated_PBS <- GRanges(as.character(map2genome[autosomes,]$chr), IRanges(map2genome[autosomes,]$pos, 
+                map2genome[autosomes,]$pos), 
+                stat = Mtt_PBS$t, 
+                diff = Btt_PBS$logFC, 
+                ind.fdr = Mtt_PBS$adj.P.Val, 
+                P.Value = Mtt_PBS$P.Value, 
+                is.sig = Mtt_PBS$adj.P.Val < 0.05, 
+                ProbeID=rownames(Mtt_PBS),
+                Gene=map2genome[autosomes,]$UCSC_RefGene_Name)
+names(annotated_PBS)=rownames(Mtt_PBS)
+annotated_PBS <- sort(annotated_PBS)
+
+#convert ewas statistics to S4 class
+ewas_PBS <- new("CpGannotated", ranges = annotated_PBS)
+
+#individual probe result
+stats_PBS <-ewas_PBS@ranges %>%
+  as_tibble() %>%
+  filter(is.sig==TRUE) %>%
+  arrange(ind.fdr)
+
+#print to screen
+stats_PBS
+
+```
+
+## Full Genome DMR Finder
+```{r DMRs IAP vs NIAP: PBS, warning=FALSE, message=FALSE, echo=FALSE}
+#DMR finder
+dmrcoutput_PBS         <- dmrcate(ewas_PBS,lambda=1000, C=2, min.cpgs = 4, pcutoff = 0.05)
+
+#convert to data frame and filter 
+dmrs_PBS          <- extractRanges(dmrcoutput_PBS) 
+dmrs.df_PBS <- dmrs_PBS %>%
+    as.data.frame %>% 
+    mutate(betaAfc = abs(meandiff)) 
+
+#Print to screen
+dmrs.df_PBS
+
+```
+
+
+### DMR Volcano Plots
+```{r Volcano Plot IAP vs NIAP: PBS, fig.height=8, fig.width=8}
+# Scatterplot of DMRs
+
+dmrs.df_PBS$overlapping.genes = ifelse(is.na(dmrs.df_PBS$overlapping.genes), paste("intergenic"), dmrs.df_PBS$overlapping.genes)
+fun_color_range <- colorRampPalette(c('#ca0020', '#f4a582','#f7f7f7',	'#92c5de', '#0571b0'))
+
+my_colors <- fun_color_range(5)  
+
+#Make width log for more spread
+PBS_dmr_log <- dmrs.df_PBS %>% 
+  mutate(log_width = log(width))  # change y axis to log
+
+# volcano plot
+
+PBS_maxdiff <- ggscatter(PBS_dmr_log, x = "maxdiff", y = "log_width",  
+   color = "maxdiff", size = 3,
+   label = "overlapping.genes", 
+   label.select = list(criteria = "dmrs.df_PBS$maxdiff > 0.1 | dmrs.df_PBS$maxdiff < -0.1"),
+  repel = TRUE,
+   font.label = c(12, "plain", "black"),
+   xlab = 'Methylation Loss/Gain',
+   ylab = 'log(n) region size (bp)',
+    ggtheme = theme_bw(base_rect_size = 2, base_size = 20)) +
+   labs(title = 'Diff. Methylated Regions in IAP vs NIAP:\n PBS Condition', color = "Max Difference")+
+   theme(plot.title = element_text(hjust=0.5)) +
+  scale_colour_gradientn(colors = my_colors) 
+
+PBS_maxdiff
+
+```
+
+### missMethyl Gene Ontology Plot
+```{r missMethyl Calculations IAP vs NIAP: PBS, warning=FALSE, message=FALSE, echo=FALSE,  fig.width=20, fig.height=6}
+
+library(missMethyl)
+#322 regions
+genes.loss <- dmrs.df_PBS %>%
+  as_tibble() %>%
+  dplyr::filter(meandiff < 0)
+
+#491 regions
+genes.gain <- dmrs.df_PBS %>%
+  as_tibble() %>%
+  dplyr::filter(meandiff > 0)
+
+#ontology testing - loss regions
+gst.loss <- goregion(GRanges(genes.loss), all.cpg=rownames(M), 
+                       collection="GO", array.type="EPIC", plot.bias=F, sig.genes = FALSE)
+table(gst.loss$FDR < 0.05)
+
+#kegg loss regions
+
+gst.loss.kegg <- goregion(GRanges(genes.loss), all.cpg=rownames(M), 
+                       collection="KEGG", array.type="EPIC", plot.bias=F, sig.genes = FALSE)
+table(gst.loss.kegg$FDR < 0.05)
+
+#ontology testing - gain regions
+gst.gain <- goregion(GRanges(genes.gain), all.cpg=rownames(M), 
+                       collection="GO", array.type="EPIC", plot.bias=F)
+table(gst.gain$FDR < 0.05)
+
+#kegg gain regions
+gst.gain.kegg <- goregion(GRanges(genes.gain), all.cpg=rownames(M), 
+                       collection="KEGG", array.type="EPIC", plot.bias=F, sig.genes = FALSE)
+table(gst.gain.kegg$FDR < 0.05)
+
+#top loss and gain 
+top.gst.gain <- topGSA(gst.gain.kegg, number = 10)
+
+top.gst.loss <- topGSA(gst.loss.kegg, number = 10)
+
+# top gain df
+df1 <- top.gst.gain %>%
+  mutate(Coverage = (DE / N) * 100) %>%
+  mutate(Count =(N-min(N))/(max(N)-min(N))*10) %>%
+  arrange(desc(Coverage))
+
+P1 <- ggdotchart(df1, x = "Description", y = "Coverage",
+           rotate=T, dot.size = 'Count',
+           sorting = 'desc', color = 'P.DE',
+           title='DMRs hypermeth') +
+  theme_bw(base_rect_size = 2, base_size = 20)
+
+# top loss df
+df2 <- top.gst.loss %>%
+  mutate(Coverage = (DE / N) * 100) %>%
+  mutate(Count =(N-min(N))/(max(N)-min(N))*10) %>%
+  arrange(desc(Coverage))
+
+P2 <- ggdotchart(df2, x = "Description", y = "Coverage",
+           rotate=T, dot.size = 'Count',
+           sorting = 'desc', color='P.DE',
+           title='DMRs hypometh') +
+  theme_bw(base_rect_size = 2, base_size = 20)
+
+#Cowplot
+library(cowplot)
+# Cleaning the plots
+P1 <- P1 + rremove("legend")
+
+# Arranging the plot using cowplot
+plot_grid(P1, P2, align = "h", rel_widths = c(0.6,0.8), ncol = 2, nrow = 1)
+
+```
+
+# Analysis MPL vs PBS Stimulations
+
+## Hypothesis Testing
+
+## EWAS on Full Genome
+```{r, warning=FALSE}
+#Model definition
+design <- model.matrix(~Condition + sex +
+                        PC1_cp+
+                        PC2_cp+
+                        PC3_cp+
+                        PC4_cp+
+                        PC5_cp+
+                        PC1_snp+
+                        PC2_snp+
+                         Age.months+
+                        as.numeric(as.factor(metadata$Subject_ID)) ,metadata)
+
+
+#create variable for autosomes
+autosomes = !(map2genome$chr=='chrX' | map2genome$chr=='chrY')
+
+
+#fit M vals
+M.fit <- lmFit(M[autosomes,], design)
+
+#fit B vals
+B.fit <- lmFit(Beta[autosomes,], design)
+
+#fit Bayesian to models
+M.fit <- eBayes(M.fit)
+
+B.fit <- eBayes(B.fit)
+
+summary(decideTests(M.fit))
+```
+
+## DMP Finder
+```{r DMP Finder PBS vs MPL}
+Mtt_MPL <- topTable(M.fit, coef = 'ConditionMPL', number = Inf, sort.by = 'none')
+Btt_MPL <- topTable(B.fit, coef = 'ConditionMPL', number = Inf, sort.by = 'none')
+
+#EWAS statistics
+annotated_MPL <- GRanges(as.character(map2genome[autosomes,]$chr), IRanges(map2genome[autosomes,]$pos, 
+                map2genome[autosomes,]$pos), 
+                stat = Mtt_MPL$t, 
+                diff = Btt_MPL$logFC, 
+                ind.fdr = Mtt_MPL$adj.P.Val, 
+                P.Value = Mtt_MPL$P.Value, 
+                is.sig = Mtt_MPL$P.Value <= 1e-5, 
+                ProbeID=rownames(Mtt_MPL),
+                Gene=map2genome[autosomes,]$UCSC_RefGene_Name)
+names(annotated_MPL)=rownames(Mtt_MPL)
+annotated_MPL <- sort(annotated_MPL)
+
+#convert ewas statistics to S4 class
+ewas_MPL <- new("CpGannotated", ranges = annotated_MPL)
+
+#individual probe result
+stats_MPL <-ewas_MPL@ranges %>%
+  as_tibble() %>%
+  filter(is.sig==TRUE) %>%
+  arrange(ind.fdr)
+
+#print to screen
+stats_MPL
+
+```
+
+## DMR Finder
+```{r DMRs  PBS vs MPL, warning=FALSE, message=FALSE}
+#DMR finder
+dmrcoutput_MPL         <- dmrcate(ewas_MPL,lambda=1000, C=2, min.cpgs = 4, pcutoff = 0.05)
+
+#convert to data frame and filter 
+dmrs_MPL          <- extractRanges(dmrcoutput_MPL) 
+
+dmrs.df_MPL <- dmrs_MPL %>%
+    as.data.frame %>% 
+    mutate(betaAfc = abs(meandiff)) 
+
+#Print to screen
+dmrs.df_MPL
+
+```
+
+### Miss Methyl Calculations
+
+```{r missMethyl plot calculations PBS vs MPL, warning=FALSE, message=FALSE, echo=FALSE,  fig.width=20, fig.height=6}
+
+library(missMethyl)
+#322 regions
+genes.loss_MPL <- dmrs.df_MPL %>%
+  as_tibble() %>%
+  dplyr::filter(meandiff < 0)
+
+#491 regions
+genes.gain_MPL <- dmrs.df_MPL %>%
+  as_tibble() %>%
+  dplyr::filter(meandiff > 0)
+
+
+#Loss ontology testing
+gst.loss_MPL <- goregion(GRanges(genes.loss_MPL), all.cpg=rownames(M), 
+                       collection="GO", array.type="EPIC", plot.bias=F)
+
+table(gst.loss_MPL$FDR < 0.05)
+
+# Loss KEGG
+gst.loss.kegg_MPL <- goregion(GRanges(genes.loss_MPL), all.cpg=rownames(M), 
+                       collection="KEGG", array.type="EPIC", plot.bias=F)
+table(gst.loss.kegg_MPL$FDR < 0.05)
+
+#Gain ontology testing
+gst.gain_MPL <- goregion(GRanges(genes.gain_MPL), all.cpg=rownames(M), 
+                       collection="GO", array.type="EPIC", plot.bias=F)
+table(gst.gain_MPL$FDR < 0.05)
+
+#Gain KEGG
+gst.gain.kegg_MPL <- goregion(GRanges(genes.gain_MPL), all.cpg=rownames(M), 
+                       collection="KEGG", array.type="EPIC", plot.bias=F)
+
+table(gst.gain.kegg_MPL$FDR < 0.05)
+
+#top loss and gain
+top.gst.gain_MPL <- topGSA(gst.gain.kegg_MPL, number = 10)
+
+top.gst.loss_MPL <- topGSA(gst.loss.kegg_MPL, number = 10)
+
+df1_MPL <- top.gst.gain_MPL %>%
+  mutate(Coverage = (DE / N) * 100) %>%
+  mutate(Count =(N-min(N))/(max(N)-min(N))*10) %>%
+  arrange(desc(Coverage))
+
+P1_MPL <- ggdotchart(df1_MPL, x = "Description", y = "Coverage",
+           rotate=T, dot.size = 'Count',
+           sorting = 'desc', color = 'P.DE',
+           title='DMRs hypermeth') +
+  theme_bw(base_rect_size = 2, base_size = 20)
+
+df2_MPL <- top.gst.loss_MPL %>%
+  mutate(Coverage = (DE / N) * 100) %>%
+  mutate(Count =(N-min(N))/(max(N)-min(N))*10) %>%
+  arrange(desc(Coverage))
+
+P2_MPL <- ggdotchart(df2_MPL, x = "Description", y = "Coverage",
+           rotate=T, dot.size = 'Count',
+           sorting = 'desc', color='P.DE',
+           title='DMRs hypometh') +
+  theme_bw(base_rect_size = 2, base_size = 20)
+
+library(cowplot)
+# Cleaning the plots
+P1_MPL <- P1_MPL + rremove("legend")
+
+# Arranging the plot using cowplot
+plot_grid(P1_MPL, P2_MPL, align = "h")
+
+```

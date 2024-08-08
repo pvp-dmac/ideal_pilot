@@ -1,0 +1,454 @@
+---
+title: "meQTL_analysis"
+author: |
+  David Martino  
+  Telethon Kids Institute  
+  University of Western Australia
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+**Project**\
+*Study: IDEAL project*\  
+*PI: Ofer Levy*\  
+*contact: Ofer Levy <Ofer.Levy@childrens.harvard.edu>*\   
+
+**Protocol**\
+*Cell type: PBMC*\  
+*Extraction method: Chemagic low volume blood kit*\  
+*Assay: Infinium Global Screening array + MD*\  
+
+**Data Generation**\  
+*0.65 - 1.5ug of DNA send to AGRF for bisulphite treatment and hybridization to array*\  
+*Contact: Melinda Ziino <melinda.ziino@agrf.org.au>*\  
+
+**Location of Data**\
+*Raw files: hohpc23 server @172.28.174.81/mnt/fws_hpc_cepi/RAW_DATA/CAGRF20083570_GSAMD_IDEAL*\  
+*Processed data:           @172.28.174.81/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSAMD_IDEAL*\  
+*Sample manifest can be found in associated project folder*\  
+
+
+# 1.0 Setup
+## Directories
+```{r}
+indir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed'
+methdir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+outdir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+plotdir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/plots'
+```
+
+## Libraries 
+```{r call library packages, message= FALSE, warning=FALSE}
+library(tidyverse)
+library(MatrixEQTL)
+library(GenomicRanges)
+library(ggpubr)
+```
+
+
+# 1.0 Read in methylation markers
+```{r}
+load("/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/data_sets_final.RData")
+
+dmps <- read.csv(file.path(methdir, 'IP_PBS_dmrprobes.csv'), row.names = 1) #if using DMR probes
+
+#dmps <- read.csv(file.path(methdir, 'IPstatusPBS.dmps.csv'), row.names = 1) #if using DMPs
+
+#methylation marker data
+meth <- Beta[dmps$ProbeID,]
+
+```
+
+
+## Extend regions by +/- 500 kb
+
+we write the extended regions to file in BED format to filter SNPs within those regions
+
+```{r}
+#create GRanges object of DMP positions
+meth.gr <- GRanges(dmps)
+
+#extend meth regions 500kb
+meth.extend <- flank(meth.gr ,  500000, both = TRUE)
+
+#write extended regions to file
+meth.dat <- as.data.frame(meth.extend) %>%
+  dplyr::select(seqnames, start, end) %>%
+  dplyr::rename('chrom'='seqnames') %>%
+  dplyr::rename('chromStart'='start') %>%
+  dplyr::rename('chromEnd'='end') %>%
+  dplyr::arrange(chrom, chromStart)
+
+meth.dat$chrom = gsub("chr", "", meth.dat$chrom)
+  
+#write positions to file 
+write.table(meth.dat, file='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed/filter.bed', 
+            col.names = TRUE, row.names = FALSE, sep = "\t", quote = FALSE)
+
+```
+
+## create meth positions object for modelling
+```{r}
+methpos <- as.data.frame(meth.gr) %>%
+  dplyr::select(seqnames, start, end, ProbeID) %>%
+  dplyr::rename('chr'='seqnames') %>%
+  dplyr::rename('left'='start') %>%
+  dplyr::rename('right'='end') %>%
+  dplyr::rename('geneid'='ProbeID') %>%
+  dplyr::select(geneid,chr,left,right) %>%
+  dplyr::arrange(chr, left) #order by genomic position
+
+#order meth data set by genomic position
+meth <- meth[methpos$geneid,]
+```
+
+
+# 2.0 SNP filtering based on extended positions
+
+```{bash}
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed'
+
+vcftools --gzvcf $indir/ILGSAMD-17768.clean.imputed.maf-0.5.hwe.vcf.gz \
+         --bed $indir/filter.bed \
+         --recode -c | bgzip -c > $indir/ILGSAMD-17768.clean.imputed.filtered.vcf.gz
+
+```
+
+
+## Convert to 012 genotype format
+
+```{bash}
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed'
+
+vcftools --gzvcf $indir/ILGSAMD-17768.clean.imputed.filtered.vcf.gz \
+         --012 \
+         --out $indir/ILGSAMD-17768.genotypes
+    
+```
+
+
+# 3.0 Read in SNP marker data
+
+
+## Create a data frame of genotypes
+
+```{r}
+# Read in subject info file
+ind <- read.table(file.path(indir, 'ILGSAMD-17768.genotypes.012.indv'), header = FALSE) 
+  row_names <- gsub("^[0-9]+_", "", ind$V1)
+
+# Read in snp position file
+snps <- read.table(file.path(indir, 'ILGSAMD-17768.genotypes.012.pos'), header = FALSE) # have 1079685 markers
+
+col_names <- paste(snps$V1, snps$V2, sep=":")
+
+library(data.table)
+data <- fread(file.path(indir, 'ILGSAMD-17768.genotypes.012'),header = FALSE, drop=1) # drop=1 removes the row.names
+
+# Combine the data into a single data frame and transpose
+snp.table <- as.data.frame(data)
+colnames(snp.table)=col_names
+snp.table=t(snp.table)
+colnames(snp.table)=row_names
+
+#Create a GRanges of SNP table
+colnames(snps) = c('chr','pos')
+snps$chr = paste('chr', snps$chr, sep="")
+
+snps.gr <- GRanges(seqnames = snps$chr,
+              ranges = IRanges(start = snps$pos, end = snps$pos))
+
+#extract SNP positions as data table
+snp.pos <- as.data.frame(snps.gr) %>%
+  mutate(snpid = paste(seqnames,start,sep=":")) %>%
+  mutate(chr=gsub('chr',"",seqnames)) %>%
+  dplyr::rename('pos'='start') %>%
+  dplyr::select(snpid,chr,pos)
+
+values(snps.gr)= snp.table
+
+#extract snps as a matrix
+snp.df <- as.data.frame(snps.gr) 
+
+rsid <- paste(snp.df$seqnames, snp.df$start, sep=":")
+
+snp.df <- snp.df %>%
+  dplyr::select(-c(1:5)) %>%
+  as.matrix()
+
+rownames(snp.df)=rsid
+
+#for some reason the column names of snp.df have 'X' appended to the beginning
+colnames(snp.df)=gsub("X","",colnames(snp.df))
+
+#Also have '.' instead of "-"
+colnames(snp.df)=gsub("\\.","-",colnames(snp.df))
+```
+
+
+
+```{r}
+#filter meth to PBS condition
+meth <- meth[,metadata$Condition=="PBS"]
+
+#rename to subject ID as now only one replicate
+colnames(meth) = metadata$Subject_ID[metadata$Condition=="PBS"]
+
+#which individuals have matching snp array?
+colnames(snp.df) <- sub("_.*", "", colnames(snp.df)) #replaces the column names with subject ID using regex
+
+#match order of individuals
+foo <- colnames(meth) %in% colnames(snp.df) 
+
+meth <- meth[,foo]
+
+# Get the column order of mat1
+column_order <- order(colnames(snp.df))
+
+# Reorder columns of mat2 to match mat1
+meth <- meth[, match(colnames(snp.df), colnames(meth))]
+
+#create metadata for matrixQTL objects
+metasub <- metadata[metadata$Condition=="PBS", ] 
+
+metasub <- metasub[match(colnames(snp.df), metasub$Subject_ID),]
+```
+
+
+# 4.0 matrixEQTL model fit
+
+```{r}
+useModel = modelLINEAR
+
+snp.marker = SlicedData$new(snp.df)
+meth.marker = SlicedData$new(meth)
+
+## create covariates file
+cvrt.df <- metasub %>%
+    dplyr::select(Sample_Name, sex, Ipstatus, PC1_cp, PC2_cp, PC3_cp, PC4_cp, PC5_cp, PC1_snp, PC2_snp) %>%
+  mutate(sex = as.numeric(as.factor(sex)),
+  Ipstatus = as.numeric(as.factor(Ipstatus)))
+
+### transpose and conver to data matrix. NB exclude the sample names or the matrix turns into character
+mat <- as.matrix(t(cvrt.df[,-1]))
+
+# set the column names of the matrix to Sample_Name
+colnames(mat) <- cvrt.df$Sample_Name
+
+cvrt=SlicedData$new();
+cvrt$CreateFromMatrix(mat)
+```
+
+
+## Model function
+```{r}
+me = Matrix_eQTL_main(
+    snps = snp.marker,
+    gene = meth.marker,
+    pvOutputThreshold.cis = 1e-2,
+    pvOutputThreshold=1e-5, #setting to zero excludes trans qtls. Default is 1e-05, which does cis and trans.
+    errorCovariance = numeric(),
+    snpspos = snp.pos,
+    genepos = methpos,
+    cisDist = 1000000,
+    cvrt = cvrt,
+    useModel = useModel,
+    verbose = TRUE,
+    pvalue.hist = "qqplot",
+    min.pv.by.genesnp = TRUE,
+    noFDRsaveMemory = FALSE)
+```
+
+## meQTL stats
+
+```{r}
+meqtls <- me$all$eqtls %>% as_tibble() %>%
+  dplyr::filter(FDR < 0.05) %>%
+  dplyr::rename(SNP = snps) %>%
+  dplyr::rename(P=pvalue)
+
+write.csv(meqtls, file=file.path(outdir, file ='meqtlstats.csv'))
+
+
+snps_list <- list()
+gene_list <- list()
+
+for (i in 1:nrow(meqtls)) {
+  snps_list[[i]] <- meqtls[i, "SNP"]
+  gene_list[[i]] <- meqtls[i, "gene"]
+}
+
+snps_vector <- unlist(snps_list)
+meth_vector <- unlist(gene_list)
+
+```
+
+
+## summary stats on meqtls
+```{r}
+length(unique(meqtls$gene))
+#5
+
+length(unique(meqtls$SNP))
+#52
+```
+
+```{r}
+#how many times a CpG is affected by a SNP on average
+summary <- meqtls %>%
+  dplyr::select(SNP,gene)%>%
+  group_by(gene) %>% 
+  summarise(snp.count = length(SNP)) 
+
+summary(summary$snp.count)
+```
+
+```{r}
+#how many times a SNP is assocaited with a CpG on average
+summary <- meqtls %>%
+  dplyr::select(SNP,gene)%>%
+  group_by(SNP) %>% 
+  summarise(cpg.count = length(gene)) 
+
+summary(summary$cpg.count)
+```
+
+
+## FUMA GWAS
+```{r}
+ #create a BED for FUMAGWAS
+bed1 <- tidyr::separate(meqtls, SNP, into = c("chr", "pos"), sep = ":") 
+
+bed1 <- bed1 %>%
+  dplyr::rename('BP'='pos') %>%
+  dplyr::rename('CHR'='chr') %>%
+  dplyr::select(CHR, BP, P)
+  
+bed1$CHR <- gsub('chr',"",bed1$CHR)
+
+bed1$BP=as.integer(bed1$BP)
+bed1$CHR=as.integer(bed1$CHR)
+
+bed.sort <- bed1 %>% 
+  arrange(CHR, BP)
+
+write.table(bed1,file.path(outdir,'FUMAGWAS'), sep="\t", quote = F, col.names = T)
+```
+
+
+# 6.0 Visualisations
+
+## P value distribution
+```{r}
+png(file=file.path(outdir,'meQTLs.qq.png'), width = 400, height = 400)
+plot(me, pch = 16, cex = 0.7);
+dev.off()
+```
+
+
+## Circos plot
+
+```{r}
+#meqtls <- read.csv('/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_TAHS/outputs/meqtlstats.csv', row.names = 1)
+
+bed1 <- separate(meqtls, SNP, into = c("chr", "pos"), sep = ":") %>%
+  dplyr::rename('start'='pos') %>%
+  dplyr::mutate(start=as.integer(start)) %>%
+  dplyr::mutate('end'= paste(start)) %>%
+  dplyr::mutate(end=as.integer(end)) %>%
+  dplyr::select('chr','start','end') 
+
+# Define the order of "chr" values
+chr_order <- c(paste0("chr", 1:22), "chrX", "chrY")
+
+# Sort the dataframe by "chr" and then "start"
+bed1 <- bed1 %>%
+  arrange(match(chr, chr_order), start)
+
+
+#get the positions of the cpgs
+bed2 <- map2genome[meqtls$gene, c('chr','pos')] %>%
+  as_tibble() %>%
+  dplyr::mutate('end'= pos) %>%
+  dplyr::rename('start'=pos) %>%
+  dplyr::mutate(start= as.integer(start)) %>%
+  dplyr::mutate(end= as.integer(end)) %>% as.data.frame()
+
+# Sort the dataframe by "chr" and then "start"
+bed2 <- bed2 %>%
+  arrange(match(chr, chr_order), start)
+
+```
+
+
+```{r}
+library(circlize)
+
+png(file=file.path(plotdir,'Circlize_meQTLs.png'), width = 450, height = 450)
+circos.initializeWithIdeogram()
+circos.genomicLink(bed1, bed2, col = rand_color(nrow(bed1), transparency = 0.5), 
+    border = NA)
+dev.off()
+```
+
+
+## Boxplots
+
+```{r}
+meqtls.df <- separate(meqtls, SNP, into = c("chr", "pos"), sep = ":")
+```
+
+
+```{r}
+snp.mat = as.matrix(snp.df[snps_vector,]) %>% t()
+  meth.mat = as.matrix(meth[meth_vector,]) %>% t()
+  
+df <- merge(snp.mat[,6], meth.mat[,6], by= 0)
+  
+colnames(df) = c('Subject','snp','meth')
+```
+
+
+```{r}
+png(file=file.path(plotdir,'meQTL6.png'), width = 450, height = 450)
+p <- ggboxplot(df, "snp", "meth",
+     fill = "snp", palette= 'jco')+
+     theme_bw(base_rect_size = 2, base_size = 20)+
+     theme(axis.text.x=element_text(size=20, hjust = 1), axis.text.y=element_text(size=15))+
+     labs(title = paste(meqtls$SNP[1], meqtls$gene[1], sep=";"), x = "genotype") 
+p 
+dev.off()
+```
+
+```{r}
+df <- merge(snp.mat[,20], meth.mat[,20], by= 0)
+  
+colnames(df) = c('Subject','snp','meth')
+```
+
+
+```{r}
+png(file=file.path(outdir,'meQTL2.png'), width = 450, height = 450)
+p <- ggboxplot(df, "snp", "meth",
+     fill = "snp", palette= 'jco')+
+     theme_bw(base_rect_size = 2, base_size = 20)+
+     theme(axis.text.x=element_text(size=20, hjust = 1), axis.text.y=element_text(size=15))+
+     labs(title = paste(meqtls$SNP[20], meqtls$gene[20], sep=";"), x = "genotype") 
+
+my_comparisons <- list( c("0", "1"), 
+                        c("1", "2") )
+p + stat_compare_means(comparisons = my_comparisons, method = "t.test") # Add pairwise comparisons p-value
+dev.off()
+
+```
+
+# R Session Info
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,94 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Setup
+## Directories
+```{r}
+datadir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL'
+reportdir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+plotdir <- '/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/plots'
+```
+
+## Libraries 
+```{r call library packages, message= FALSE}
+library(minfi)
+library(ggplot2)
+library(ggsci)
+library(tidyverse)
+library(ggpubr)
+library(limma)
+library(DMRcate)
+```
+
+# Load processed data
+```{r}
+load(file.path(datadir,'data_sets_final.RData'))
+```
+
+
+# Find overlapping peaks
+```{r}
+library(ChIPpeakAnno)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+
+endotype.regions <- read.csv(file.path(reportdir,'IPstatusPBS.dmrs.csv'), row.names = 1) %>%
+  GRanges()
+
+MPL.regions <- read.csv(file.path(reportdir,'PBSvsMPL.dmrs.csv'), row.names = 1) %>%
+  GRanges()
+
+ol <- findOverlapsOfPeaks(endotype.regions,MPL.regions, maxgap=1000)
+peaklist <- ol$peaklist
+
+overlappingPeaks <- ol$overlappingPeaks
+names(overlappingPeaks)
+```
+
+```{r}
+png(file=file.path(plotdir,'pie.png'), width = 600, height = 600)
+pie1(table(overlappingPeaks[["endotype.regions///MPL.regions"]]$overlapping.genes), percentage = F, angle = 90, cex=2)
+
+```
+
+```{r fig.width=5, fig.height=5}
+png(file=file.path(plotdir,'vennoverlap.png'), width = 600, height = 600)
+makeVennDiagram(ol,  fill=c("#0073C2FF", "#EFC000FF"),col=c("#EFC000FF", "#0073C2FF"), #circle border color
+                cat.col=c("#D55E00", "#0072B2"), resolution= 600, main ='Overlapping Regions',
+               cex = 2.5,cat.cex = 2.5, main.cex = 2.8,cat.pos = 0)
+```
+
+
+#Permutations test
+```{r}
+pt <- peakPermTest(endotype.regions, MPL.regions, mc.cores = 20, ntimes=500,
+               TxDb=TxDb.Hsapiens.UCSC.hg19.knownGene, min.pctA=10)
+
+```
+
+#extract probes in overlapping regions
+```{r}
+#create GRanges of data set
+gr <- GRanges(seqnames=map2genome$chr, 
+                       ranges=IRanges(start=map2genome$pos,end=map2genome$pos+1),
+                       strand=map2genome$strand,
+                       ProbeID=map2genome$Name)
+
+regions <- as.data.frame(overlappingPeaks$`endotype.regions///MPL.regions`) %>%
+  dplyr::select(2:14) %>%
+  GRanges()
+
+ol.probes <- subsetByOverlaps(gr, regions, type='any') %>%
+  as.data.frame()
+
+#write to file
+write.csv(ol.probes, file = file.path(reportdir,'MPL.stim.olap.csv'))
+```
+
+#Session Info
+```{r}
+sessionInfo()
+```

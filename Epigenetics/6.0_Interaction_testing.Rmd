@@ -1,0 +1,298 @@
+---
+title: "IDEAL Methylation Analysis Final"
+author: "David Martino and Nikki Schultz \nTelethon Kids Institute  \nUniversity of Western Australia\n"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=8, fig.height=8)
+```
+
+**Project**
+*Study: IDEAL project*  
+*PI: Ofer Levy*  
+*contact: Ofer Levy <Ofer.Levy@childrens.harvard.edu>*   
+
+**Protocol**
+*Cell type: PBMC*  
+*Extraction method: Chemagic low volume blood kit*  
+*Assay: Infinium Human Methylation EPIC array*  
+
+**Data Generation**  
+*0.65 - 1.5ug of DNA send to AGRF for bisulphite treatment and hybridization to array*  
+*Contact: Melinda Ziino <melinda.ziino@agrf.org.au>*  
+
+# Setup
+## Directories
+```{r}
+datadir <- '/home/nschultz/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL'
+reportdir <- '~/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+plotdir <- '~/file_workspace/Collaborative\ Projects/HPC_CEPI/ANALYSIS/CAGRF20083570_EPIC_IDEAL/plots'
+```
+
+## Libraries 
+```{r call library packages, message= FALSE}
+library(minfi)
+library(ggplot2)
+library(ggsci)
+library(tidyverse)
+library(ggpubr)
+library(limma)
+library(dplyr)
+library(DMRcate)
+library(regioneR)
+library(gridExtra)
+library(grid)
+library(ggrepel)
+```
+
+
+# Interaction test
+```{r}
+design <- model.matrix(~0 + tx + sex +
+CD4T+
+CD8T+
+NK+
+Bcell+
+Mono+
+Gran+
+PC1_cp+
+PC2_cp+
+PC3_cp+
+PC4_cp+
+PC5_cp+
+PC1_snp+
+PC2_snp+
+Age.months,metadata)
+colnames(design)[1:8] <- levels(metadata$tx)
+colnames(design) <- make.names(colnames(design))
+
+#corfit <- duplicateCorrelation(M[autosomes,], design, block=dframe$Subject_ID)
+#load("/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_EPIC_IDEAL/corfit.RData")
+
+#fit M vals
+M.fit <- lmFit(M[Probes,], design, block = metadata$Subject_ID, correlation =  corfit$consensus.correlation)
+#fit B vals
+B.fit <- lmFit(Beta[Probes,], design, block = metadata$Subject_ID, correlation =  corfit$consensus.correlation)
+
+```
+
+
+```{r}
+#make contrasts - IP against PBS
+cm <- makeContrasts(
+BCG_cont = (NIP.PBS - NIP.BCG) - (IP.PBS - IP.BCG),
+IRM_cont = (NIP.PBS - NIP.3M.052) - (IP.PBS - IP.3M.052),
+MPL_cont = (NIP.PBS - NIP.MPL) - (IP.PBS - IP.MPL),
+levels=design)
+
+```
+
+```{r}
+#fit contrasts
+M.fit2 <- contrasts.fit(M.fit, cm)
+M.fit2 <- eBayes(M.fit2)
+
+#fit contrasts
+B.fit2 <- contrasts.fit(B.fit, cm)
+B.fit2 <- eBayes(B.fit2)
+
+summary(decideTests(M.fit2))
+
+```
+
+```{r}
+result.mpl.int <- topTable(B.fit2, coef = 3, number = Inf, sort.by = 'B')
+result.mpl.int
+
+```
+
+
+```{r}
+result.bcg.int <- topTable(B.fit2, coef = 1, number = Inf, sort.by = 'B')
+result.bcg.int
+
+```
+
+
+```{r}
+result.3m.int <- topTable(B.fit2, coef = 2, number = Inf, sort.by = 'B')
+result.3m.int
+
+```
+
+# Data Viz
+
+```{r}
+png(file=file.path(plotdir,'interaction1.png'), width = 450, height = 450)
+
+foi <- c("cg16640973")
+
+dmr.betas <- data.frame("cg16640973" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+ filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg16640973")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg16640973", 
+                    add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus', 
+                    order = c("PBS", "MPL"),
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg16640973", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+```{r}
+png(file=file.path(plotdir,'interaction2.png'), width = 450, height = 450)
+
+foi <- c("cg00499393")
+
+dmr.betas <- data.frame("cg00499393" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg00499393")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg00499393", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg00499393", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+```{r}
+png(file=file.path(plotdir,'interaction3.png'), width = 450, height = 450)
+foi <- c("cg01631368")
+
+dmr.betas <- data.frame("cg01631368" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg01631368")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg01631368", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg01631368", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+
+```{r}
+png(file=file.path(plotdir,'interaction4.png'), width = 450, height = 450)
+
+foi <- c("cg19063061")
+
+dmr.betas <- data.frame("cg19063061" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg19063061")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg19063061", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg19063061", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+```{r}
+png(file=file.path(plotdir,'interaction5.png'), width = 450, height = 450)
+
+foi <- c("cg23603852")
+
+dmr.betas <- data.frame("cg23603852" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg23603852")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg23603852", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg23603852", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+```{r}
+png(file=file.path(plotdir,'interaction6.png'), width = 450, height = 450)
+
+foi <- c("cg07439880")
+
+dmr.betas <- data.frame("cg07439880" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg07439880")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg07439880", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg07439880", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+```{r}
+png(file=file.path(plotdir,'interaction7.png'), width = 450, height = 450)
+
+foi <- c("cg21148880")
+
+dmr.betas <- data.frame("cg21148880" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg21148880")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg21148880", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg21148880", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+```{r}
+png(file=file.path(plotdir,'interaction8.png'), width = 450, height = 450)
+
+foi <- c("cg10170774")
+
+dmr.betas <- data.frame("cg10170774" = Beta[foi, ])
+
+
+foi_meta <- cbind(metadata, dmr.betas) %>%
+  filter(Condition %in% c("PBS", "MPL")) %>%
+  select(c("Ipstatus", "Condition", "cg10170774")) 
+
+ggdotplot(foi_meta, x = 'Condition', y = "cg10170774", 
+                     add = 'boxplot', color = 'Ipstatus', fill = 'Ipstatus',
+                    palette = c("#FFD500", "#33B0FF")) +
+               labs(title = "cg10170774", y = "% Methylation") +
+              theme_bw(base_rect_size = 2, base_size = 20)+
+             theme(axis.text.x=element_text(size=20, angle=45, hjust = 1), axis.text.y=element_text(size=15))
+```
+
+#R sesh
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,166 @@
+---
+title: "Preparaion for Imputation"
+author: |
+  David Martino  
+  Telethon Kids Institute  
+  University of Western Australia
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+**Project**\
+*Study: IDEAL project*\  
+*PI: Ofer Levy*\  
+*contact: Ofer Levy <Ofer.Levy@childrens.harvard.edu>*\   
+
+**Protocol**\
+*Cell type: PBMC*\  
+*Extraction method: Chemagic low volume blood kit*\  
+*Assay: Infinium Global Screening array + MD*\  
+
+**Data Generation**\  
+*0.65 - 1.5ug of DNA send to AGRF for bisulphite treatment and hybridization to array*\  
+*Contact: Melinda Ziino <melinda.ziino@agrf.org.au>*\  
+
+
+# 1.0 Preparation for imputation
+
+## Create a frequency file
+```{bash}
+export PATH=$PATH:/home/dmartino/bin/plink_linux_x86_64_20221210
+
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL'
+name='ILGSAMD-17768.clean'
+
+plink --freq --bfile $indir/$name \
+      --out $indir/$name.freqs
+```
+
+# 2.0 Run perl script for pre-imputation data checks using Haplotype Reference Consortium (HRC)
+
+Download the Tool and sites
+wget http://www.well.ox.ac.uk/~wrayner/tools/HRC-1000G-check-bim-v4.2.7.zip
+wget ftp://ngs.sanger.ac.uk/production/hrc/HRC.r1-1/HRC.r1-1.GRCh37.wgs.mac5.sites.tab.gz
+
+Unzip both. The script will run checks and produce a Run-plink.sh script in 'indir' to fix descrepancies and create vcf files.
+
+```{bash}
+cd /home/dmartino/bin
+
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL'
+refdir='/mnt/scratch/reference'
+bim='ILGSAMD-17768.clean.bim'
+frq='ILGSAMD-17768.clean.freqs.frq'
+
+perl /home/dmartino/bin/HRC-1000G-check-bim.pl -b $indir/$bim -f $indir/$frq -r $refdir/HRC.r1-1.GRCh37.wgs.mac5.sites.tab -h 
+
+```
+
+## create vcf files
+```{bash}
+cd /mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL
+
+export PATH=$PATH:/home/dmartino/bin/plink_linux_x86_64_20221210
+
+sh Run-plink.sh
+
+```
+
+
+## compress vcf files
+```{bash}
+cd /mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL
+
+for file in *.vcf; do bgzip $file; done
+
+```
+
+
+## Check validity of vcf files
+
+vcf validator tool to run optional check on file validity prior to uploading
+
+```{bash}
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL'
+
+vcf-validator $indir/ILGSAMD-17768.clean-updated-chr2.vcf.gz
+
+```
+
+# 3.0 Upload data to Michigan imputation server
+
+https://imputationserver.sph.umich.edu/
+
+1. Go to Michigan server and log in
+2. Run a Genotype Imputation (Minimac4) job
+3. Use HRC r1.1 hg19 reference panel (Haplotype Ref Consortium)
+4. Select r2 filter 0.3
+5. Select Beagle 5.4 for imputation
+6. Select EUR population if appropriate and Phasing and imputation.
+
+
+
+#4.0 Unzip imputed files
+
+NOTE the 7z program needs to be installed on your system as the .zip files from the Michigan server are pword protected
+
+The script below will need to be run in the terminal directly, not via Rstudio as the password provided by Michigan needs to be entered.
+
+```{bash}
+cd /mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed
+
+7z x "*.zip" 
+
+rLLsPnIh6cS0fe
+
+```
+
+
+# 5.0 combine per chromosome vcf files
+
+Requires bcftools to be installed on the system. 
+
+```{bash}
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed'
+
+bcftools concat -Oz $indir/chr1.dose.vcf.gz $indir/chr2.dose.vcf.gz $indir/chr3.dose.vcf.gz $indir/chr4.dose.vcf.gz $indir/chr5.dose.vcf.gz $indir/chr6.dose.vcf.gz $indir/chr7.dose.vcf.gz $indir/chr8.dose.vcf.gz $indir/chr9.dose.vcf.gz $indir/chr10.dose.vcf.gz $indir/chr11.dose.vcf.gz $indir/chr12.dose.vcf.gz $indir/chr13.dose.vcf.gz $indir/chr14.dose.vcf.gz $indir/chr15.dose.vcf.gz $indir/chr16.dose.vcf.gz $indir/chr17.dose.vcf.gz $indir/chr18.dose.vcf.gz $indir/chr19.dose.vcf.gz $indir/chr19.dose.vcf.gz $indir/chr21.dose.vcf.gz $indir/chr22.dose.vcf.gz > $indir/ILGSAMD-17768.clean.imputed.vcf.gz
+
+```
+
+# 6.0 Variant filtering
+
+## MAF < 0.05
+
+We want to remove any imputed SNPs with MAF < 0.05 as the confidence around these data points is low
+
+```{bash}
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed'
+
+vcftools --gzvcf $indir/ILGSAMD-17768.clean.imputed.vcf.gz \
+         --maf 0.05 \
+         --recode -c | bgzip -c > $indir/ILGSAMD-17768.clean.imputed.maf-0.5.vcf.gz
+  
+```
+
+## HWE p value <0.001
+
+```{bash}
+indir='/mnt/fws_hpc_cepi/ANALYSIS/CAGRF20083570_GSA_MD_IDEAL/imputed'
+
+vcftools --gzvcf $indir/ILGSAMD-17768.clean.imputed.maf-0.5.vcf.gz \
+         --hwe 0.001 \
+         --recode -c | bgzip -c > $indir/ILGSAMD-17768.clean.imputed.maf-0.5.hwe.vcf.gz
+
+```
+
+
+# R Session Info
+```{r}
+sessionInfo()
+```

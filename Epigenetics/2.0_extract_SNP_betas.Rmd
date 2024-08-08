@@ -1,0 +1,104 @@
+---
+title: "IDEAL Genetic Analaysis"
+subtitle: "David Martino"
+author: |
+  Telethon Kids Institute
+  University of Western Australia
+date: "`r Sys.Date()`"
+output: 
+  BiocStyle::html_document:
+    number_sections: true
+    toc: yes
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Project**
+*Study: IDEAL project*  
+*PI: Ofer Levy*  
+*contact: Ofer Levy <Ofer.Levy@childrens.harvard.edu>*   
+
+**Protocol**
+*Cell type: PBMC*  
+*Extraction method: Chemagic low volume blood kit*  
+*Assay: Infinium Human Methylation EPIC array*  
+
+**Data Generation**  
+*0.65 - 1.5ug of DNA send to AGRF for bisulphite treatment and hybridization to array*  
+*Contact: Melinda Ziino <melinda.ziino@agrf.org.au>*  
+
+# Setup
+## Directories
+```{r}
+datadir <- '/GROUP/ANALYSIS/CAGRF20083570_EPIC_IDEAL'
+reportdir <- '/GROUP/ANALYSIS/CAGRF20083570_EPIC_IDEAL/results'
+```
+
+## Libraries 
+```{r call library packages, message= FALSE}
+library(minfi)
+library(ggplot2)
+library(ggsci)
+library(tidyverse)
+library(ggridges)
+```
+
+# Load processed data
+```{r}
+load(file.path(datadir,'data_sets_final.RData'))
+```
+
+## PCA clustering analysis of SNP probes
+```{r}
+snps <- getSnpBeta(RGset)
+colnames(snps) <- metadata$Sample_Name
+
+pc <- prcomp(t(snps), center = TRUE, scale = TRUE, retx=TRUE)
+
+#Extract the loadings or the rotated data and the standard deviation
+loadings=pc$x
+
+```
+
+```{r, message=FALSE}
+loadings %>%
+  as_tibble(rownames = 'Sample_Name') %>%
+  dplyr::select(Sample_Name, PC1, PC2) %>%
+  dplyr::left_join(metadata) %>%
+  ggplot(aes(PC1, PC2, colour = factor(Ipstatus))) +
+  geom_point(shape = 1) +
+  #ggpubr::stat_conf_ellipse(size = 2) +
+  #ggpubr::stat_stars(alpha = 0.2) +
+  ggsci::scale_colour_npg() 
+```
+## Density plots of individual SNP
+
+```{r fig.width=10, fig.height=20}
+ cbind(metadata, t(snps)) %>%
+  subset(metadata$Condition == 'PBS') %>%
+  dplyr::select(Ipstatus, starts_with('rs')) %>%
+  tidyr::pivot_longer(cols=2:60, names_to = 'snp', values_to = 'beta' ) %>%
+  dplyr::arrange(beta) %>%
+  ggplot(aes(y=snp, x =beta)) +
+  geom_density_ridges2(aes(fill=Ipstatus, alpha = 0.2)) +
+  theme_ridges()
+
+```
+## Extract and save loadings from the SNPs
+
+```{r}
+metadata <- cbind(metadata, loadings[,1:2]) %>%
+  dplyr::rename(PC1_snp = PC1, PC2_snp = PC2)
+
+save(RGset, M, Beta, map2genome, metadata, file= file.path(datadir,'data_sets_final.RData'))
+```
+
+# R session info
+```{r}
+sessionInfo()
+```
+
+
